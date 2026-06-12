@@ -1,4 +1,4 @@
-name: Auto Update CFNew (Main & Beta)
+name: Auto Update CFNew Main Code
 
 on:
   push:
@@ -19,84 +19,67 @@ jobs:
         uses: actions/checkout@v4
 
       # ==================== 1. 读取本地版本记录 ====================
-      - name: 读取本地版本记录
-        id: get_local_versions
+      - name: 获取当前本地版本
+        id: get_local_version
         run: |
-          echo -e "\033[34m[获取本地版本记录]\033[0m"
-          
-          # 读取 Main
-          if [ -f version_main.txt ]; then
-            LOCAL_MAIN=$(cat version_main.txt | tr -d '[:space:]')
+          echo -e "\033[34m[获取本地版本]\033[0m"
+          if [ -f version.txt ]; then
+            LOCAL_VERSION=$(cat version.txt | tr -d '[:space:]')
+            echo "当前本地版本 Hash: $LOCAL_VERSION"
           else
-            LOCAL_MAIN="none"
+            echo "首次同步，没有本地版本记录。"
+            LOCAL_VERSION="none"
           fi
-          
-          # 读取 Beta
-          if [ -f version_beta.txt ]; then
-            LOCAL_BETA=$(cat version_beta.txt | tr -d '[:space:]')
-          else
-            LOCAL_BETA="none"
-          fi
-          
-          echo "LOCAL_MAIN=$LOCAL_MAIN" >> $GITHUB_ENV
-          echo "LOCAL_BETA=$LOCAL_BETA" >> $GITHUB_ENV
-          echo "本地 Main Hash: $LOCAL_MAIN"
-          echo "本地 Beta Hash: $LOCAL_BETA"
+          echo "LOCAL_VERSION=$LOCAL_VERSION" >> $GITHUB_ENV
 
       # ==================== 2. 获取远程最新 Commit ====================
       - name: 获取远程最新 Commit 信息
-        id: get_remote_versions
+        id: get_remote_version
         run: |
           echo -e "\033[34m[获取远程最新 Commit]\033[0m"
           TARGET_REPO="chujianchangan/cfnew"
           
-          # 抓取远程 main 分支
-          REMOTE_MAIN=$(curl -s "https://api.github.com/repos/$TARGET_REPO/commits/main" | jq -r '.sha' | tr -d '[:space:]')
-          # 抓取远程 beta 分支
-          REMOTE_BETA=$(curl -s "https://api.github.com/repos/$TARGET_REPO/commits/beta" | jq -r '.sha' | tr -d '[:space:]')
+          # 使用系统自带 Token 请求 API，保证 100% 成功、不触发频率限制
+          REMOTE_VERSION=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/$TARGET_REPO/commits/main" | jq -r '.sha' | tr -d '[:space:]')
           
-          # 容错处理
-          if [ "$REMOTE_MAIN" = "null" ] || [ -z "$REMOTE_MAIN" ]; then echo "错误：无法获取 Main 分支"; exit 1; fi
-          if [ "$REMOTE_BETA" = "null" ] || [ -z "$REMOTE_BETA" ]; then REMOTE_BETA="none"; echo "警告：未找到远程 Beta 分支或获取失败"; fi
+          if [ "$REMOTE_VERSION" = "null" ] || [ -z "$REMOTE_VERSION" ]; then
+            echo "错误：无法获取远程 Commit 信息，请检查网络或 API 限制。"
+            exit 1
+          fi
           
-          echo "REMOTE_MAIN=$REMOTE_MAIN" >> $GITHUB_ENV
-          echo "REMOTE_BETA=$REMOTE_BETA" >> $GITHUB_ENV
-          echo "远程 Main Hash: $REMOTE_MAIN"
-          echo "远程 Beta Hash: $REMOTE_BETA"
+          echo "远程最新版本 Hash: $REMOTE_VERSION"
+          echo "REMOTE_VERSION=$REMOTE_VERSION" >> $GITHUB_ENV
 
-      # ==================== 3. 比对并下载 Main 分支 ====================
-      - name: 检查与同步 Main 稳定版
+      # ==================== 3. 判断是否需要更新 ====================
+      - name: 判断是否需要更新
+        id: check_update
         run: |
-          echo -e "\033[34m[检查 Main 稳定版]\033[0m"
-          if [ "${{ env.LOCAL_MAIN }}" = "${{ env.REMOTE_MAIN }}" ]; then
-            echo "Main 已经是最新，无需更新。"
+          echo -e "\033[34m[判断是否需要更新]\033[0m"
+          if [ "${{ env.LOCAL_VERSION }}" = "${{ env.REMOTE_VERSION }}" ]; then
+            echo -e "\033[32m已经是最新代码，无需更新。\033[0m"
+            echo "UPDATE_NEEDED=false" >> $GITHUB_ENV
           else
-            echo "发现 Main 有更新，正在下载..."
-            wget -O _worker.js "https://raw.githubusercontent.com/chujianchangan/cfnew/main/_worker.js"
-            echo "${{ env.REMOTE_MAIN }}" > version_main.txt
-            echo "NEED_COMMIT=true" >> $GITHUB_ENV
+            echo -e "\033[33m发现代码有变动，需要更新！\033[0m"
+            echo "UPDATE_NEEDED=true" >> $GITHUB_ENV
           fi
 
-      # ==================== 4. 比对并下载 Beta 分支 ====================
-      - name: 检查与同步 Beta 测试版
-        if: env.REMOTE_BETA != 'none'
+      # ==================== 4. 下载并覆盖核心代码 ====================
+      - name: 下载并覆盖核心代码
+        if: env.UPDATE_NEEDED == 'true'
         run: |
-          echo -e "\033[34m[检查 Beta 测试版]\033[0m"
-          if [ "${{ env.LOCAL_BETA }}" = "${{ env.REMOTE_BETA }}" ]; then
-            echo "Beta 已经是最新，无需更新。"
-          else
-            echo "发现 Beta 有更新，正在下载..."
-            # 下载远程 beta 的 _worker.js，但在本地存为 _worker_beta.js 区分开
-            wget -O _worker_beta.js "https://raw.githubusercontent.com/chujianchangan/cfnew/beta/_worker.js"
-            echo "${{ env.REMOTE_BETA }}" > version_beta.txt
-            echo "NEED_COMMIT=true" >> $GITHUB_ENV
-          fi
+          echo -e "\033[34m[开始下载远程最新代码]\033[0m"
+          
+          # 精准下载 main 分支的核心文件覆盖本地，不搞 rm -rf 破坏
+          wget -O _worker.js "https://raw.githubusercontent.com/chujianchangan/cfnew/main/_worker.js"
+          
+          echo -e "\033[34m[记录新版本号]\033[0m"
+          echo "${{ env.REMOTE_VERSION }}" > version.txt
 
-      # ==================== 5. 统一提交代码 ====================
+      # ==================== 5. 提交代码 ====================
       - name: 提交并推送到你的仓库
-        if: env.NEED_COMMIT == 'true'
+        if: env.UPDATE_NEEDED == 'true'
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "🔄 自动同步 cfnew (Main: ${{ env.REMOTE_MAIN }} | Beta: ${{ env.REMOTE_BETA }})"
+          commit_message: "🔄 自动同步 cfnew 最新代码，Commit: ${{ env.REMOTE_VERSION }}"
           commit_author: "github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
           push_options: --force
