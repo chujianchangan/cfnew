@@ -1,0 +1,74 @@
+name: Auto Update CFNew Main Code
+
+on:
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 初始化仓库
+        uses: actions/checkout@v4
+
+      - name: 获取当前本地版本
+        id: get_local_version
+        run: |
+          if [ -f version.txt ]; then
+            LOCAL_VERSION=$(cat version.txt | tr -d '[:space:]')
+          else
+            LOCAL_VERSION="none"
+          fi
+          echo "LOCAL_VERSION=$LOCAL_VERSION" >> $GITHUB_ENV
+
+      - name: 获取远程最新 Commit
+        id: get_remote_version
+        run: |
+          REMOTE_VERSION=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/chujianchangan/cfnew/commits/main" | jq -r '.sha' | tr -d '[:space:]')
+          if [ "$REMOTE_VERSION" = "null" ] || [ -z "$REMOTE_VERSION" ]; then exit 1; fi
+          echo "REMOTE_VERSION=$REMOTE_VERSION" >> $GITHUB_ENV
+
+      - name: 判断是否需要更新
+        id: check_update
+        run: |
+          if [ "${{ env.LOCAL_VERSION }}" = "${{ env.REMOTE_VERSION }}" ]; then
+            echo "UPDATE_NEEDED=false" >> $GITHUB_ENV
+          else
+            echo "UPDATE_NEEDED=true" >> $GITHUB_ENV
+          fi
+
+      - name: 打包同步核心代码
+        if: env.UPDATE_NEEDED == 'true'
+        run: |
+          echo "正在下载原作者仓库压缩包..."
+          # 直接下载整个 main 分支的 zip 包，走 GitHub 官方下载流，100% 不会报代码 8
+          wget -O repo.zip "https://github.com/chujianchangan/cfnew/archive/refs/heads/main.zip"
+          
+          echo "解压并同步核心文件..."
+          unzip -q repo.zip
+          
+          # 清理旧的核心脚本（保留你的 .github 自动化目录）
+          find . -maxdepth 1 ! -name '.' ! -name '.git' ! -name '.github' ! -name 'cfnew-main' ! -name 'repo.zip' -exec rm -rf {} +
+          
+          # 将解压出来的文件夹里的所有内容拷贝到当前根目录
+          cp -r cfnew-main/* ./
+          
+          # 清理临时文件
+          rm -rf cfnew-main repo.zip
+          
+          echo "${{ env.REMOTE_VERSION }}" > version.txt
+
+      - name: 提交并推送到你的仓库
+        if: env.UPDATE_NEEDED == 'true'
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "🔄 自动同步 cfnew 最新代码"
+          commit_author: "github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
+          push_options: --force
